@@ -1,0 +1,43 @@
+# Core
+polars
+numpy
+numba
+duckdb
+rapidfuzz
+sentence-transformers
+lark
+pyarrow
+
+# For sentence-transformers
+torch
+transformers
+
+# ANN (Approximate Nearest Neighbor)
+faiss-cpu
+
+# API
+fastapi
+uvicorn[standard]
+
+# File watching
+watchdog
+
+# Utilities
+loguru
+
+# Optional: Reranking
+# cross-encoder models are loaded via sentence-transformers
+
+# Optional: RAG / LLM Integration
+openai
+anthropic
+
+# Optional: Caching
+redis
+
+# Optional: Web UI
+streamlit
+requests
+
+# Optional: Evaluation
+# (uses numpy which is already included)
