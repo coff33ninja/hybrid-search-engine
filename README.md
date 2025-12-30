@@ -322,14 +322,26 @@ Metrics: Precision, Recall, F1, MRR, NDCG, Latency (p50/p95/p99)
 
 ## 📈 Roadmap
 
-- [ ] WebSocket streaming for real-time search
-- [ ] Multi-modal search (images, audio)
-- [ ] Distributed indexing with Ray
-- [ ] GraphRAG integration
-- [ ] Fine-tuning pipeline for domain adaptation
-- [ ] A/B testing framework
-- [ ] Query autocomplete
-- [ ] Personalized ranking
+### High-Impact Features
+- [ ] Query autocomplete — Suggest completions as users type
+- [ ] Semantic caching — Cache similar queries to avoid redundant embedding calls
+- [ ] Multi-language support — Use multilingual embedding models
+- [ ] Document deduplication — Detect and handle near-duplicate content
+- [ ] Metadata filtering — Filter results by date, source, tags, etc.
+- [ ] Async indexing — Background job queue for large document batches
+
+### Advanced Features
+- [ ] Fine-tuning pipeline — Train embeddings on your domain data
+- [ ] GraphRAG — Knowledge graph integration for better context
+- [ ] Multi-modal search — Images, PDFs with OCR, audio transcripts
+- [ ] A/B testing framework — Compare search configurations
+- [ ] Personalized ranking — User-specific result boosting
+- [ ] WebSocket streaming — Real-time search results
+
+### Infrastructure
+- [ ] Distributed indexing — Scale with Ray or Celery
+- [ ] Prometheus metrics — Observability and monitoring
+- [ ] OpenTelemetry tracing — Request tracing across services
 
 ## 📄 License
 
