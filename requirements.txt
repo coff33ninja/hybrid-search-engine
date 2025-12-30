@@ -8,6 +8,12 @@ sentence-transformers
 lark
 pyarrow
 
+# High-Impact Features
+hypothesis  # Property-based testing
+datasketch  # MinHash/LSH for deduplication
+langdetect  # Language detection
+rq  # Job queue (Redis Queue)
+
 # For sentence-transformers
 torch
 transformers

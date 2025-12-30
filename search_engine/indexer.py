@@ -114,7 +114,7 @@ class Indexer:
         if not self.con:
             raise ConnectionError("Database connection is not open.")
         
-        # Main documents table
+        # Main documents table with extended schema for high-impact features
         self.con.execute("""
             CREATE TABLE IF NOT EXISTS docs (
                 doc_id INTEGER PRIMARY KEY,
@@ -122,9 +122,24 @@ class Indexer:
                 source_path TEXT,
                 char_count INTEGER,
                 word_count INTEGER,
-                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                language VARCHAR(10),
+                fingerprint BLOB,
+                is_duplicate BOOLEAN DEFAULT FALSE,
+                canonical_doc_id INTEGER,
+                metadata JSON
             )
         """)
+        
+        # Add columns if they don't exist (for existing databases)
+        try:
+            self.con.execute("ALTER TABLE docs ADD COLUMN IF NOT EXISTS language VARCHAR(10)")
+            self.con.execute("ALTER TABLE docs ADD COLUMN IF NOT EXISTS fingerprint BLOB")
+            self.con.execute("ALTER TABLE docs ADD COLUMN IF NOT EXISTS is_duplicate BOOLEAN DEFAULT FALSE")
+            self.con.execute("ALTER TABLE docs ADD COLUMN IF NOT EXISTS canonical_doc_id INTEGER")
+            self.con.execute("ALTER TABLE docs ADD COLUMN IF NOT EXISTS metadata JSON")
+        except Exception:
+            pass  # Columns already exist or ALTER not supported
         
         # Query history for learning
         self.con.execute("""
@@ -137,6 +152,16 @@ class Indexer:
             )
         """)
         
+        # Query suggestions for autocomplete
+        self.con.execute("""
+            CREATE TABLE IF NOT EXISTS query_suggestions (
+                query_text TEXT PRIMARY KEY,
+                frequency INTEGER DEFAULT 1,
+                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                avg_result_count FLOAT
+            )
+        """)
+        
         # Feedback for ranking improvement
         self.con.execute("""
             CREATE TABLE IF NOT EXISTS feedback (
@@ -146,6 +171,22 @@ class Indexer:
                 relevance_score INTEGER,
                 clicked BOOLEAN DEFAULT FALSE,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Indexing jobs for async processing
+        self.con.execute("""
+            CREATE TABLE IF NOT EXISTS indexing_jobs (
+                job_id VARCHAR(36) PRIMARY KEY,
+                status VARCHAR(20),
+                total_docs INTEGER,
+                processed_docs INTEGER,
+                created_at TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT,
+                webhook_url TEXT,
+                retry_count INTEGER DEFAULT 0
             )
         """)
         
