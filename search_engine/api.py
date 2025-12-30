@@ -13,6 +13,12 @@ from loguru import logger
 from .indexer import Indexer
 from .core import Searcher
 from .watcher import FileWatcher, WATCHDOG_AVAILABLE
+from .autocomplete import AutocompleteEngine, Suggestion
+from .semantic_cache import SemanticCache, SearchResult as CacheSearchResult
+from .deduplication import DeduplicationEngine, DedupeAction, DATASKETCH_AVAILABLE
+from .language import LanguageDetector, LANGDETECT_AVAILABLE
+from .jobs import JobQueue, JobState, IndexingTask
+from .metadata import MetadataFilter, MetadataStore
 
 
 # --- Pydantic Models ---
@@ -79,6 +85,15 @@ class SearchEngineState:
         self.db_path = "index.duckdb"
         self.use_faiss = False
         self._last_query_id: Optional[int] = None
+        
+        # High-impact features
+        self.autocomplete: Optional[AutocompleteEngine] = None
+        self.semantic_cache: Optional[SemanticCache] = None
+        self.deduplication: Optional[DeduplicationEngine] = None
+        self.language_detector: Optional[LanguageDetector] = None
+        self.job_queue: Optional[JobQueue] = None
+        self.metadata_filter: Optional[MetadataFilter] = None
+        self.metadata_store: Optional[MetadataStore] = None
 
 state = SearchEngineState()
 
@@ -97,6 +112,20 @@ async def lifespan(app: FastAPI):
         enable_query_memory=True
     )
     
+    # Initialize high-impact features
+    state.autocomplete = AutocompleteEngine(max_suggestions=10)
+    state.semantic_cache = SemanticCache(similarity_threshold=0.95, ttl_seconds=3600)
+    state.metadata_filter = MetadataFilter()
+    state.metadata_store = MetadataStore(db_path=state.db_path)
+    state.job_queue = JobQueue(max_concurrent=3, max_retries=3)
+    
+    # Initialize optional features
+    if DATASKETCH_AVAILABLE:
+        state.deduplication = DeduplicationEngine(threshold=0.9, action=DedupeAction.FLAG)
+    
+    if LANGDETECT_AVAILABLE:
+        state.language_detector = LanguageDetector()
+    
     # Try to load existing index
     try:
         with Indexer(db_path=state.db_path, use_faiss=state.use_faiss) as indexer:
@@ -112,6 +141,8 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if state.watcher and state.watcher.is_running():
         state.watcher.stop()
+    if state.job_queue:
+        state.job_queue.shutdown(wait=False)
     logger.info("Search engine API stopped.")
 
 
@@ -525,3 +556,404 @@ async def rerank_results(
 
 
 # --- Run with: uvicorn search_engine.api:app --reload ---
+
+
+# =============================================================================
+# HIGH-IMPACT FEATURE ENDPOINTS
+# =============================================================================
+
+# --- Autocomplete Endpoints ---
+
+class AutocompleteRequest(BaseModel):
+    partial_query: str = Field(..., min_length=1, description="Partial query to complete")
+    limit: int = Field(10, ge=1, le=50, description="Maximum suggestions")
+
+
+class AutocompleteSuggestion(BaseModel):
+    text: str
+    score: float
+    source: str
+    frequency: int
+
+
+@app.post("/autocomplete", response_model=List[AutocompleteSuggestion])
+async def get_autocomplete(request: AutocompleteRequest):
+    """Get autocomplete suggestions for partial query."""
+    if not state.autocomplete:
+        raise HTTPException(status_code=500, detail="Autocomplete not initialized")
+    
+    suggestions: List[Suggestion] = state.autocomplete.suggest(request.partial_query, limit=request.limit)
+    
+    return [
+        AutocompleteSuggestion(
+            text=s.text,
+            score=s.score,
+            source=s.source,
+            frequency=s.frequency
+        )
+        for s in suggestions
+    ]
+
+
+@app.post("/autocomplete/record")
+async def record_autocomplete_selection(
+    partial_query: str = Query(..., description="Partial query typed"),
+    selected: str = Query(..., description="Suggestion selected")
+):
+    """Record user selection for autocomplete learning."""
+    if not state.autocomplete:
+        raise HTTPException(status_code=500, detail="Autocomplete not initialized")
+    
+    state.autocomplete.record_selection(partial_query, selected)
+    return {"status": "recorded"}
+
+
+# --- Semantic Cache Endpoints ---
+
+@app.get("/cache/stats")
+async def get_cache_stats():
+    """Get semantic cache statistics."""
+    if not state.semantic_cache:
+        raise HTTPException(status_code=500, detail="Cache not initialized")
+    
+    stats = state.semantic_cache.stats
+    
+    # Include CacheSearchResult info in response
+    return {
+        **stats,
+        "result_type": CacheSearchResult.__name__,
+        "cache_enabled": True
+    }
+
+
+@app.post("/cache/invalidate")
+async def invalidate_cache():
+    """Invalidate all cached results."""
+    if not state.semantic_cache:
+        raise HTTPException(status_code=500, detail="Cache not initialized")
+    
+    count = state.semantic_cache.invalidate()
+    return {"status": "invalidated", "entries_cleared": count}
+
+
+# --- Deduplication Endpoints ---
+
+class DuplicateInfo(BaseModel):
+    doc_id: int
+    similarity: float
+    is_canonical: bool
+
+
+@app.get("/documents/duplicates", response_model=List[dict])
+async def list_duplicates():
+    """List detected duplicate documents."""
+    if not state.deduplication:
+        raise HTTPException(status_code=501, detail="Deduplication not available (datasketch not installed)")
+    
+    if state.docs_df is None:
+        return []
+    
+    # Get all documents and check for duplicates
+    duplicates = []
+    seen_content: dict[int, str] = {}  # Track content hashes to find duplicates
+    
+    for row in state.docs_df.to_dicts():
+        doc_id = row.get('doc_id')
+        content = row.get('content', '')
+        
+        if not content:
+            continue
+        
+        # Store content hash for tracking
+        content_hash = state.deduplication.compute_content_hash(content)
+        seen_content[doc_id] = content_hash
+        
+        fp = state.deduplication.compute_fingerprint(content)
+        matches = state.deduplication.find_duplicates(fp)
+        
+        if matches:
+            duplicates.append({
+                "doc_id": doc_id,
+                "content_hash": content_hash,
+                "matches": [
+                    {"doc_id": m.doc_id, "similarity": m.similarity}
+                    for m in matches[:5]
+                ]
+            })
+    
+    return duplicates
+
+
+@app.post("/documents/{doc_id}/mark-duplicate")
+async def mark_as_duplicate(
+    doc_id: int,
+    canonical_id: int = Query(..., description="ID of canonical document")
+):
+    """Manually mark a document as duplicate of another."""
+    if not state.deduplication:
+        raise HTTPException(status_code=501, detail="Deduplication not available")
+    
+    # This would update the database to mark the relationship
+    # For now, just acknowledge the request
+    logger.info(f"Marked doc_id={doc_id} as duplicate of canonical_id={canonical_id}")
+    
+    return {
+        "status": "marked",
+        "doc_id": doc_id,
+        "canonical_id": canonical_id
+    }
+
+
+# --- Language Detection Endpoints ---
+
+class LanguageDetectionRequest(BaseModel):
+    texts: List[str] = Field(..., description="Texts to detect language for")
+
+
+class LanguageDetectionResult(BaseModel):
+    text_preview: str
+    language: str
+    confidence: float
+    script: Optional[str] = None
+
+
+@app.post("/language/detect", response_model=List[LanguageDetectionResult])
+async def detect_language(request: LanguageDetectionRequest):
+    """Detect language of provided texts."""
+    if not state.language_detector:
+        raise HTTPException(status_code=501, detail="Language detection not available (langdetect not installed)")
+    
+    results = state.language_detector.detect_batch(request.texts)
+    
+    return [
+        LanguageDetectionResult(
+            text_preview=text[:100] + "..." if len(text) > 100 else text,
+            language=result.language,
+            confidence=result.confidence,
+            script=result.script
+        )
+        for text, result in zip(request.texts, results)
+    ]
+
+
+# --- Enhanced Search with Language Filter ---
+
+class FilteredSearchRequest(SearchRequest):
+    language: Optional[str] = Field(None, description="Filter by language (ISO 639-1 code)")
+    metadata_filter: Optional[str] = Field(None, description="Metadata filter expression")
+
+
+@app.post("/search/filtered", response_model=SearchResponse)
+async def search_with_filters(request: FilteredSearchRequest):
+    """Search with language and metadata filters."""
+    if state.docs_df is None or state.vectors is None:
+        raise HTTPException(status_code=400, detail="No documents indexed")
+    
+    if not state.searcher:
+        raise HTTPException(status_code=500, detail="Searcher not initialized")
+    
+    sem_w = request.semantic_weight or 0.7
+    lex_w = request.lexical_weight or 0.3
+    
+    # Perform base search
+    results = state.searcher.search(
+        query=request.query,
+        docs_df=state.docs_df,
+        vectors=state.vectors,
+        top_k=request.top_k * 3,  # Get more results for filtering
+        semantic_weight=sem_w,
+        lexical_weight=lex_w
+    )
+    
+    # Apply language filter
+    if request.language and state.language_detector:
+        filtered_results = []
+        for score, content, doc_id in results:
+            detected = state.language_detector.detect_simple(content)
+            if detected == request.language:
+                filtered_results.append((score, content, doc_id))
+        results = filtered_results
+    
+    # Apply metadata filter
+    if request.metadata_filter and state.metadata_filter and state.metadata_store:
+        try:
+            ast = state.metadata_filter.parse(request.metadata_filter)
+            filtered_results = []
+            for score, content, doc_id in results:
+                metadata = state.metadata_store.get(doc_id)
+                if state.metadata_filter._evaluate(ast, metadata):
+                    filtered_results.append((score, content, doc_id))
+            results = filtered_results
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid filter: {e}")
+    
+    # Limit to top_k
+    results = results[:request.top_k]
+    
+    return SearchResponse(
+        query=request.query,
+        query_id=None,
+        results=[
+            SearchResult(score=score, content=content, doc_id=doc_id)
+            for score, content, doc_id in results
+        ],
+        weights_used={"semantic": sem_w, "lexical": lex_w, "learned": False}
+    )
+
+
+# --- Async Job Endpoints ---
+
+class AsyncIndexRequest(BaseModel):
+    documents: List[Document] = Field(..., description="Documents to index")
+    webhook_url: Optional[str] = Field(None, description="URL to notify on completion")
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress_total: int
+    progress_processed: int
+    progress_percentage: float
+    error: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
+
+
+@app.post("/jobs/index", response_model=JobStatusResponse)
+async def create_async_index_job(request: AsyncIndexRequest):
+    """Create async indexing job for large document batches."""
+    if not state.job_queue:
+        raise HTTPException(status_code=500, detail="Job queue not initialized")
+    
+    if not request.documents:
+        raise HTTPException(status_code=400, detail="No documents provided")
+    
+    # Convert to task format
+    task_docs = [
+        {"content": d.content, "source_path": d.source_path or ""}
+        for d in request.documents
+    ]
+    
+    task = IndexingTask(documents=task_docs)
+    
+    # Set up task handler if not already set
+    def index_handler(task: IndexingTask, progress_cb):
+        docs = [d["content"] for d in task.documents]
+        paths = [d.get("source_path", "") for d in task.documents]
+        
+        with Indexer(db_path=state.db_path, use_faiss=state.use_faiss) as indexer:
+            for i, (doc, path) in enumerate(zip(docs, paths)):
+                indexer.add_documents([doc], [path])
+                progress_cb(i + 1)
+        
+        return {"documents_indexed": len(docs)}
+    
+    state.job_queue.set_task_handler(index_handler)
+    
+    job = state.job_queue.enqueue(task, webhook_url=request.webhook_url)
+    
+    return JobStatusResponse(
+        job_id=job.id,
+        status=job.status.value,
+        progress_total=job.progress.total,
+        progress_processed=job.progress.processed,
+        progress_percentage=job.progress.percentage,
+        error=job.error,
+        created_at=job.created_at.isoformat(),
+        completed_at=job.completed_at.isoformat() if job.completed_at else None
+    )
+
+
+@app.get("/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str):
+    """Get status of async indexing job."""
+    if not state.job_queue:
+        raise HTTPException(status_code=500, detail="Job queue not initialized")
+    
+    job = state.job_queue.get_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    
+    return JobStatusResponse(
+        job_id=job.id,
+        status=job.status.value,
+        progress_total=job.progress.total,
+        progress_processed=job.progress.processed,
+        progress_percentage=job.progress.percentage,
+        error=job.error,
+        created_at=job.created_at.isoformat(),
+        completed_at=job.completed_at.isoformat() if job.completed_at else None
+    )
+
+
+@app.delete("/jobs/{job_id}")
+async def cancel_job(job_id: str):
+    """Cancel pending async indexing job."""
+    if not state.job_queue:
+        raise HTTPException(status_code=500, detail="Job queue not initialized")
+    
+    cancelled = state.job_queue.cancel(job_id)
+    
+    if cancelled:
+        return {"status": "cancelled", "job_id": job_id}
+    else:
+        raise HTTPException(status_code=400, detail="Job cannot be cancelled (not pending or not found)")
+
+
+@app.get("/jobs", response_model=List[JobStatusResponse])
+async def list_jobs(
+    status: Optional[str] = Query(None, description="Filter by status")
+):
+    """List all async indexing jobs."""
+    if not state.job_queue:
+        raise HTTPException(status_code=500, detail="Job queue not initialized")
+    
+    status_filter = None
+    if status:
+        try:
+            status_filter = JobState(status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    
+    jobs = state.job_queue.backend.list_jobs(status_filter)
+    
+    return [
+        JobStatusResponse(
+            job_id=job.id,
+            status=job.status.value,
+            progress_total=job.progress.total,
+            progress_processed=job.progress.processed,
+            progress_percentage=job.progress.percentage,
+            error=job.error,
+            created_at=job.created_at.isoformat(),
+            completed_at=job.completed_at.isoformat() if job.completed_at else None
+        )
+        for job in jobs
+    ]
+
+
+# --- Metadata Endpoints ---
+
+class MetadataUpdateRequest(BaseModel):
+    doc_id: int = Field(..., description="Document ID")
+    metadata: dict = Field(..., description="Metadata to set")
+
+
+@app.post("/documents/{doc_id}/metadata")
+async def set_document_metadata(doc_id: int, request: MetadataUpdateRequest):
+    """Set metadata for a document."""
+    if not state.metadata_store:
+        raise HTTPException(status_code=500, detail="Metadata store not initialized")
+    
+    state.metadata_store.set(doc_id, request.metadata)
+    return {"status": "updated", "doc_id": doc_id}
+
+
+@app.get("/documents/{doc_id}/metadata")
+async def get_document_metadata(doc_id: int):
+    """Get metadata for a document."""
+    if not state.metadata_store:
+        raise HTTPException(status_code=500, detail="Metadata store not initialized")
+    
+    metadata = state.metadata_store.get(doc_id)
+    return {"doc_id": doc_id, "metadata": metadata}

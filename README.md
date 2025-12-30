@@ -135,11 +135,14 @@ pipeline = create_pipeline(
 
 ## 🔌 API Endpoints
 
+### Core Endpoints
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/search` | POST | Hybrid search |
 | `/search/batch` | POST | Multiple queries |
 | `/search/highlighted` | POST | Search with snippets |
+| `/search/filtered` | POST | Search with language/metadata filters |
 | `/ask` | POST | RAG question answering |
 | `/rerank` | POST | Cross-encoder reranking |
 | `/index` | POST | Index documents |
@@ -150,6 +153,23 @@ pipeline = create_pipeline(
 | `/stats` | GET | Statistics |
 | `/documents` | GET | List documents |
 | `/health` | GET | Health check |
+
+### High-Impact Feature Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/autocomplete` | POST | Get query suggestions |
+| `/autocomplete/record` | POST | Record user selection |
+| `/cache/stats` | GET | Semantic cache statistics |
+| `/cache/invalidate` | POST | Clear cached results |
+| `/documents/duplicates` | GET | List duplicate documents |
+| `/documents/{id}/mark-duplicate` | POST | Mark document as duplicate |
+| `/documents/{id}/metadata` | GET/POST | Get/set document metadata |
+| `/language/detect` | POST | Detect text language |
+| `/jobs/index` | POST | Create async indexing job |
+| `/jobs/{id}` | GET | Get job status |
+| `/jobs/{id}` | DELETE | Cancel pending job |
+| `/jobs` | GET | List all jobs |
 
 ### Example Requests
 
@@ -163,6 +183,10 @@ curl -X POST http://localhost:8000/search \
 curl -X POST http://localhost:8000/search/batch \
   -d '{"queries": ["query1", "query2"], "top_k": 3}'
 
+# Filtered search (with language and metadata)
+curl -X POST http://localhost:8000/search/filtered \
+  -d '{"query": "machine learning", "language": "en", "metadata_filter": "category:tech AND year:>2023"}'
+
 # RAG
 curl -X POST http://localhost:8000/ask \
   -d '{"question": "What is Python?", "llm_provider": "openai"}'
@@ -170,6 +194,27 @@ curl -X POST http://localhost:8000/ask \
 # Index directory
 curl -X POST http://localhost:8000/index/directory \
   -d '{"directory": "data", "extensions": [".txt", ".md"]}'
+
+# Autocomplete
+curl -X POST http://localhost:8000/autocomplete \
+  -d '{"partial_query": "mach", "limit": 5}'
+
+# Language detection
+curl -X POST http://localhost:8000/language/detect \
+  -d '{"texts": ["Hello world", "Bonjour le monde"]}'
+
+# Async indexing job
+curl -X POST http://localhost:8000/jobs/index \
+  -d '{"documents": [{"content": "doc1"}, {"content": "doc2"}], "webhook_url": "http://example.com/callback"}'
+
+# Get job status
+curl http://localhost:8000/jobs/abc-123
+
+# Cache stats
+curl http://localhost:8000/cache/stats
+
+# List duplicates
+curl http://localhost:8000/documents/duplicates
 ```
 
 ## 💻 CLI Usage

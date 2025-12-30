@@ -28,3 +28,6 @@ Thumbs.db
 /index.duckdb
 /index.duckdb.wal
 *.log
+.kiro/
+.hypothesis/
+.coverage
