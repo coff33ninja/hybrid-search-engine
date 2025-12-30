@@ -323,25 +323,34 @@ Metrics: Precision, Recall, F1, MRR, NDCG, Latency (p50/p95/p99)
 ## 📈 Roadmap
 
 ### High-Impact Features
-- [ ] Query autocomplete — Suggest completions as users type
-- [ ] Semantic caching — Cache similar queries to avoid redundant embedding calls
-- [ ] Multi-language support — Use multilingual embedding models
-- [ ] Document deduplication — Detect and handle near-duplicate content
-- [ ] Metadata filtering — Filter results by date, source, tags, etc.
-- [ ] Async indexing — Background job queue for large document batches
+
+| Feature | Description | Benefit |
+|---------|-------------|---------|
+| **Query Autocomplete** | Suggest query completions as users type using prefix trees (tries) and popular query history. Combines character-level matching with semantic similarity to suggest relevant queries even with typos. | Faster search experience, reduced typing effort, helps users discover relevant terms |
+| **Semantic Caching** | Cache query embeddings and results based on semantic similarity rather than exact string matching. If a new query is >95% similar to a cached query, return cached results instantly. Uses locality-sensitive hashing (LSH) for fast similarity lookup. | 10-100x faster response for similar queries, reduced compute costs, lower latency |
+| **Multi-Language Support** | Integrate multilingual embedding models (e.g., `paraphrase-multilingual-MiniLM-L12-v2`) to support 50+ languages. Includes language detection, cross-lingual search (query in English, find French docs), and language-specific tokenization. | Global reach, unified search across multilingual document collections |
+| **Document Deduplication** | Detect near-duplicate documents using MinHash/SimHash fingerprinting before indexing. Configurable similarity threshold (e.g., 90% similar = duplicate). Options to merge, skip, or flag duplicates. | Cleaner index, no redundant results, reduced storage and compute |
+| **Metadata Filtering** | Add structured metadata fields (date, author, category, tags, source) to documents. Support filter expressions in queries: `query:"machine learning" AND date:>2024-01-01 AND tags:python`. Pre-filtering before vector search for efficiency. | Precise result filtering, faceted search, time-based relevance |
+| **Async Indexing** | Background job queue (Celery/RQ/Dramatiq) for processing large document batches. Progress tracking, retry logic, webhook notifications on completion. Non-blocking API that returns job ID immediately. | Handle millions of documents without blocking, better UX for bulk uploads |
 
 ### Advanced Features
-- [ ] Fine-tuning pipeline — Train embeddings on your domain data
-- [ ] GraphRAG — Knowledge graph integration for better context
-- [ ] Multi-modal search — Images, PDFs with OCR, audio transcripts
-- [ ] A/B testing framework — Compare search configurations
-- [ ] Personalized ranking — User-specific result boosting
-- [ ] WebSocket streaming — Real-time search results
+
+| Feature | Description | Benefit |
+|---------|-------------|---------|
+| **Fine-Tuning Pipeline** | Train custom embedding models on your domain data using contrastive learning. Provide positive/negative document pairs or use click-through data. Supports LoRA for efficient fine-tuning of large models. | 20-40% relevance improvement for domain-specific searches |
+| **GraphRAG** | Build knowledge graphs from documents using entity extraction (NER) and relation detection. Combine graph traversal with vector search for multi-hop reasoning. Answer complex queries like "What companies did the CEO of X work for before?" | Better context understanding, multi-hop reasoning, explainable results |
+| **Multi-Modal Search** | Index and search across multiple content types: images (CLIP embeddings), PDFs (OCR + layout analysis), audio (Whisper transcription), video (frame extraction + audio). Unified embedding space for cross-modal queries. | Search images with text queries, find content across all media types |
+| **A/B Testing Framework** | Built-in experimentation system to compare search configurations. Split traffic between variants, track metrics (CTR, MRR, session success), statistical significance testing. Automatic winner selection with gradual rollout. | Data-driven optimization, safe configuration changes, measurable improvements |
+| **Personalized Ranking** | User profiles based on search history, clicks, and explicit preferences. Re-rank results using user embeddings and collaborative filtering. Privacy-preserving options with on-device personalization. | Higher relevance per user, increased engagement, better conversion |
+| **WebSocket Streaming** | Real-time bidirectional communication for instant search-as-you-type. Stream partial results as they're computed, progressive refinement as more results are scored. Server-sent events fallback for broader compatibility. | Sub-100ms perceived latency, smoother UX, real-time collaboration features |
 
 ### Infrastructure
-- [ ] Distributed indexing — Scale with Ray or Celery
-- [ ] Prometheus metrics — Observability and monitoring
-- [ ] OpenTelemetry tracing — Request tracing across services
+
+| Feature | Description | Benefit |
+|---------|-------------|---------|
+| **Distributed Indexing** | Horizontal scaling with Ray or Celery workers. Shard documents across nodes, parallel embedding generation, distributed FAISS indexes (IVF with replicas). Auto-scaling based on queue depth. | Handle billions of documents, linear scaling with hardware |
+| **Prometheus Metrics** | Export detailed metrics: query latency (p50/p95/p99), throughput (QPS), index size, cache hit rates, embedding generation time, error rates. Pre-built Grafana dashboards for visualization. | Proactive monitoring, capacity planning, SLA tracking |
+| **OpenTelemetry Tracing** | Distributed tracing across all components: API → Cache → Embedder → Vector Search → Reranker. Trace context propagation, span attributes for debugging, integration with Jaeger/Zipkin/Datadog. | Debug slow queries, identify bottlenecks, understand system behavior |
 
 ## 📄 License
 
